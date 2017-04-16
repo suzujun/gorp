@@ -6,10 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
-	_ "github.com/mattn/go-sqlite3"
-	_ "github.com/ziutek/mymysql/godrv"
 	"log"
 	"math/rand"
 	"os"
@@ -17,6 +13,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/ziutek/mymysql/godrv"
 )
 
 // verify interface compliance
@@ -99,6 +100,12 @@ type InvoicePersonView struct {
 	Memo          string
 	FName         string
 	LegacyVersion int64
+}
+
+type InvoiceWithPerson struct {
+	Invoice
+	// belongTo
+	Person Person `db:"person"`
 }
 
 type TableWithNull struct {
@@ -1476,6 +1483,45 @@ func TestInvoicePersonView(t *testing.T) {
 
 	// this should test true
 	expected := &InvoicePersonView{inv1.Id, p1.Id, inv1.Memo, p1.FName, 0}
+	if !reflect.DeepEqual(list[0], expected) {
+		t.Errorf("%v != %v", list[0], expected)
+	}
+}
+
+func TestInvoiceWithPerson(t *testing.T) {
+	dbmap := initDbMap()
+	defer dropAndClose(dbmap)
+
+	// Create some rows
+	p1 := &Person{0, 0, 0, "bob", "smith", 0}
+	dbmap.Insert(p1)
+
+	// notice how we can wire up p1.Id to the invoice easily
+	inv1 := &Invoice{0, 0, 0, "xmas order", p1.Id, false}
+	dbmap.Insert(inv1)
+
+	// Run your query
+	query := "select i.*, " +
+		"person.Id      as `person.Id`, " +
+		"person.Created as `person.Created`, " +
+		"person.Updated as `person.Updated`, " +
+		"person.FName   as `person.FName`, " +
+		"person.LName   as `person.LName`, " +
+		"person.Version as `person.Version` " +
+		"from invoice_test i, person_test person " +
+		"where i.PersonId = person.Id"
+
+	// pass a slice of pointers to Select()
+	// this avoids the need to type assert after the query is run
+	var list []*InvoiceWithPerson
+	_, err := dbmap.Select(&list, query)
+	if err != nil {
+		panic(err)
+	}
+
+	// this should test true
+	expected := &InvoiceWithPerson{Invoice: *inv1, Person: *p1}
+	expected.Person.LName = list[0].Person.LName // Synchronize because it was changed by PostGet
 	if !reflect.DeepEqual(list[0], expected) {
 		t.Errorf("%v != %v", list[0], expected)
 	}

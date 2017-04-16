@@ -17,12 +17,12 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
 	"time"
-	"log"
-	"os"
 )
 
 // Oracle String (empty string is null)
@@ -1576,7 +1576,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		return nil, fmt.Errorf("gorp: select into non-struct slice requires 1 column, got %d", len(cols))
 	}
 
-	var colToFieldIndex [][]int
+	var colToFieldIndex [][][]int
 	if intoStruct {
 		if colToFieldIndex, err = columnToFieldIndex(m, t, cols); err != nil {
 			if !NonFatalError(err) {
@@ -1611,15 +1611,17 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		for x := range cols {
 			f := v.Elem()
 			if intoStruct {
-				index := colToFieldIndex[x]
-				if index == nil {
+				indexs := colToFieldIndex[x]
+				if indexs == nil {
 					// this field is not present in the struct, so create a dummy
 					// value for rows.Scan to scan into
 					var dummy sql.RawBytes
 					dest[x] = &dummy
 					continue
 				}
-				f = f.FieldByIndex(index)
+				for _, index := range indexs {
+					f = f.FieldByIndex(index)
+				}
 			}
 			target := f.Addr().Interface()
 			if conv != nil {
@@ -1706,8 +1708,8 @@ func expandNamedQuery(m *DbMap, query string, keyGetter func(key string) reflect
 	}), args
 }
 
-func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error) {
-	colToFieldIndex := make([][]int, len(cols))
+func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][][]int, error) {
+	colToFieldIndex := make([][][]int, len(cols))
 
 	// check if type t is a mapped table - if so we'll
 	// check the table for column aliasing below
@@ -1723,25 +1725,39 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 	missingColNames := []string{}
 	for x := range cols {
 		colName := strings.ToLower(cols[x])
-		field, found := t.FieldByNameFunc(func(fieldName string) bool {
-			field, _ := t.FieldByName(fieldName)
-			fieldName = field.Tag.Get("db")
+		searchField := func(t reflect.Type, colName string) (reflect.StructField, bool) {
+			return t.FieldByNameFunc(func(fieldName string) bool {
+				field, _ := t.FieldByName(fieldName)
+				fieldName = field.Tag.Get("db")
 
-			if fieldName == "-" {
-				return false
-			} else if fieldName == "" {
-				fieldName = field.Name
-			}
-			if tableMapped {
-				colMap := colMapOrNil(table, fieldName)
-				if colMap != nil {
-					fieldName = colMap.ColumnName
+				if fieldName == "-" {
+					return false
+				} else if fieldName == "" {
+					fieldName = field.Name
+				}
+				if tableMapped {
+					colMap := colMapOrNil(table, fieldName)
+					if colMap != nil {
+						fieldName = colMap.ColumnName
+					}
+				}
+				return colName == strings.ToLower(fieldName)
+			})
+		}
+		field, found := searchField(t, colName)
+		if found {
+			colToFieldIndex[x] = [][]int{field.Index}
+		} else {
+			// retry to split column name
+			t2 := t
+			colNames := strings.Split(colName, ".")
+			for _, colName := range colNames {
+				field, found = searchField(t2, colName)
+				if found {
+					t2 = field.Type
+					colToFieldIndex[x] = append(colToFieldIndex[x], field.Index)
 				}
 			}
-			return colName == strings.ToLower(fieldName)
-		})
-		if found {
-			colToFieldIndex[x] = field.Index
 		}
 		if colToFieldIndex[x] == nil {
 			missingColNames = append(missingColNames, colName)
