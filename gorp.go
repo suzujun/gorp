@@ -1719,47 +1719,47 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][][]int, err
 		tableMapped = true
 	}
 
+	fieldIndexMap := map[string][][]int{}
+	var setFieldIndexMap func(t reflect.Type, parentKeys ...string)
+	setFieldIndexMap = func(t reflect.Type, parentKeys ...string) {
+		t.FieldByNameFunc(func(fieldName string) bool {
+			field, _ := t.FieldByName(fieldName)
+			fieldName = field.Tag.Get("db")
+
+			if fieldName == "-" {
+				return false
+			} else if fieldName == "" {
+				fieldName = field.Name
+			}
+			if tableMapped {
+				colMap := colMapOrNil(table, fieldName)
+				if colMap != nil {
+					fieldName = colMap.ColumnName
+				}
+			}
+			fieldName = strings.ToLower(fieldName)
+			last := fieldIndexMap[strings.Join(parentKeys, ".")]
+			values := append(last, field.Index)
+			keys := append(parentKeys, fieldName)
+			fieldIndexMap[strings.Join(keys, ".")] = values
+			// recursive execution
+			if field.Type.Kind() == reflect.Struct && !field.Anonymous {
+				setFieldIndexMap(field.Type, keys...)
+			}
+			return false
+		})
+	}
+	setFieldIndexMap(t)
+
 	// Loop over column names and find field in i to bind to
 	// based on column name. all returned columns must match
 	// a field in the i struct
 	missingColNames := []string{}
 	for x := range cols {
 		colName := strings.ToLower(cols[x])
-		searchField := func(t reflect.Type, colName string) (reflect.StructField, bool) {
-			return t.FieldByNameFunc(func(fieldName string) bool {
-				field, _ := t.FieldByName(fieldName)
-				fieldName = field.Tag.Get("db")
-
-				if fieldName == "-" {
-					return false
-				} else if fieldName == "" {
-					fieldName = field.Name
-				}
-				if tableMapped {
-					colMap := colMapOrNil(table, fieldName)
-					if colMap != nil {
-						fieldName = colMap.ColumnName
-					}
-				}
-				return colName == strings.ToLower(fieldName)
-			})
-		}
-		field, found := searchField(t, colName)
-		if found {
-			colToFieldIndex[x] = [][]int{field.Index}
+		if indexs, ok := fieldIndexMap[colName]; ok {
+			colToFieldIndex[x] = indexs
 		} else {
-			// retry to split column name
-			t2 := t
-			colNames := strings.Split(colName, ".")
-			for _, colName := range colNames {
-				field, found = searchField(t2, colName)
-				if found {
-					t2 = field.Type
-					colToFieldIndex[x] = append(colToFieldIndex[x], field.Index)
-				}
-			}
-		}
-		if colToFieldIndex[x] == nil {
 			missingColNames = append(missingColNames, colName)
 		}
 	}
